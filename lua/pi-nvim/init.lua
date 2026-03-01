@@ -27,9 +27,22 @@ function M.setup(opts)
     M.send_buffer()
   end, { desc = "Send entire buffer to pi with a prompt" })
 
+  vim.api.nvim_create_user_command("Pi", function(args)
+    local ui = require("pi-nvim.ui")
+    local selection = nil
+    if args.range == 2 then
+      selection = ui.capture_selection()
+    end
+    ui.open({ selection = selection })
+  end, { range = true, desc = "Open pi send dialog" })
+
+  -- Default keymap: <leader>p in normal and visual mode
+  vim.keymap.set("n", "<leader>p", ":Pi<CR>", { silent = true, desc = "Send to pi" })
+  vim.keymap.set("v", "<leader>p", ":Pi<CR>", { silent = true, desc = "Send selection to pi" })
+
   vim.api.nvim_create_user_command("PiPing", function()
     M.ping()
-  end, { desc = "Ping the pi nvim-bridge" })
+  end, { desc = "Ping the pi session" })
 
   vim.api.nvim_create_user_command("PiSessions", function()
     M.list_sessions()
@@ -88,7 +101,7 @@ end
 function M.send_raw(msg, cb)
   local sock_path = M.get_socket_path()
   if not sock_path then
-    local err = "No pi session found. Is pi running with nvim-bridge extension?"
+    local err = "No pi session found. Is pi running with pi-nvim extension?"
     vim.notify(err, vim.log.levels.ERROR)
     if cb then cb(err, nil) end
     return

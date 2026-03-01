@@ -5,7 +5,7 @@ import * as path from "node:path";
 import * as crypto from "node:crypto";
 
 /**
- * nvim-bridge: Exposes a unix socket so external tools (like a neovim plugin)
+ * pi-nvim: Exposes a unix socket so external tools (like a neovim plugin)
  * can send prompts/context into a running interactive pi session.
  *
  * Protocol: newline-delimited JSON over a unix socket.
@@ -88,11 +88,11 @@ export default function (pi: ExtensionAPI) {
         fs.writeFileSync(socketPath + ".info", JSON.stringify({ cwd, pid: process.pid }));
       } catch {}
 
-      ctx.ui.notify(`nvim-bridge listening on ${socketPath}`, "info");
+      ctx.ui.notify(`pi-nvim listening on ${socketPath}`, "info");
     });
 
     server.on("error", (err) => {
-      ctx.ui.notify(`nvim-bridge error: ${err.message}`, "error");
+      ctx.ui.notify(`pi-nvim error: ${err.message}`, "error");
     });
   });
 
@@ -150,13 +150,13 @@ export default function (pi: ExtensionAPI) {
   // Also clean up on process exit
   process.on("exit", cleanup);
 
-  pi.registerCommand("nvim-bridge-info", {
-    description: "Show nvim-bridge socket path",
+  pi.registerCommand("pi-nvim-info", {
+    description: "Show pi-nvim socket path",
     handler: async (_args, ctx) => {
       if (socketPath) {
         ctx.ui.notify(`Socket: ${socketPath}`, "info");
       } else {
-        ctx.ui.notify("nvim-bridge not active", "warning");
+        ctx.ui.notify("pi-nvim not active", "warning");
       }
     },
   });
