@@ -75,27 +75,39 @@ function M.get_socket_path()
   -- Scan the sockets directory for .info files
   local ok, files = pcall(vim.fn.glob, sockets_dir .. "/*.info", false, true)
   if ok and files then
-    -- First pass: exact cwd match
+    -- First pass: exact cwd match, prefer newest socket
+    local best_sock = nil
+    local best_mtime = 0
     for _, info_path in ipairs(files) do
       local content_ok, content = pcall(vim.fn.readfile, info_path)
       if content_ok and content and content[1] then
         local parsed_ok, info = pcall(vim.json.decode, content[1])
         if parsed_ok and info then
           local sock = info_path:sub(1, -6) -- strip ".info"
-          if info.cwd == cwd and vim.uv.fs_stat(sock) then
-            return sock
+          local stat = vim.uv.fs_stat(sock)
+          if info.cwd == cwd and stat then
+            if stat.mtime.sec > best_mtime then
+              best_mtime = stat.mtime.sec
+              best_sock = sock
+            end
           end
         end
       end
     end
+    if best_sock then return best_sock end
 
-    -- Second pass: any live session
+    -- Second pass: any live session (newest)
     for _, info_path in ipairs(files) do
       local sock = info_path:sub(1, -6)
-      if vim.uv.fs_stat(sock) then
-        return sock
+      local stat = vim.uv.fs_stat(sock)
+      if stat then
+        if stat.mtime.sec > best_mtime then
+          best_mtime = stat.mtime.sec
+          best_sock = sock
+        end
       end
     end
+    if best_sock then return best_sock end
   end
 
   -- Fall back to latest symlink
@@ -295,11 +307,28 @@ function M.list_sessions()
       local parsed_ok, info = pcall(vim.json.decode, content[1])
       if parsed_ok and info then
         local sock = info_path:sub(1, -6)
-        table.insert(sessions, {
-          cwd = info.cwd or "?",
-          socket = sock,
-          alive = vim.uv.fs_stat(sock) ~= nil,
-        })
+        local alive = vim.uv.fs_stat(sock) ~= nil
+        if alive then
+          -- Format start time as relative or short time
+          local started = ""
+          if info.startedAt then
+            local ok2, ts = pcall(function()
+              -- Parse ISO 8601: "2026-03-01T14:10:09.123Z"
+              local y, mo, d, h, mi, s = info.startedAt:match("(%d+)-(%d+)-(%d+)T(%d+):(%d+):(%d+)")
+              if h and mi then
+                return string.format("%s:%s", h, mi)
+              end
+              return info.startedAt
+            end)
+            if ok2 then started = ts end
+          end
+          table.insert(sessions, {
+            cwd = info.cwd or "?",
+            pid = info.pid or "?",
+            started = started,
+            socket = sock,
+          })
+        end
       end
     end
   end
@@ -310,9 +339,11 @@ function M.list_sessions()
   end
 
   local items = {}
+  local current = M.get_socket_path()
   for _, s in ipairs(sessions) do
-    local status = s.alive and "●" or "○"
-    table.insert(items, string.format("%s %s", status, s.cwd))
+    local marker = (current == s.socket) and "●" or "○"
+    local time_str = s.started ~= "" and string.format(" started %s", s.started) or ""
+    table.insert(items, string.format("%s %s [pid %s%s]", marker, s.cwd, s.pid, time_str))
   end
 
   vim.ui.select(items, { prompt = "Pi sessions:" }, function(choice, idx)
@@ -320,7 +351,7 @@ function M.list_sessions()
     local session = sessions[idx]
     if session then
       M.config.socket_path = session.socket
-      vim.notify("Connected to pi at: " .. session.cwd, vim.log.levels.INFO)
+      vim.notify(string.format("Connected to pi at %s [pid %s]", session.cwd, session.pid), vim.log.levels.INFO)
     end
   end)
 end

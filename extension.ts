@@ -33,7 +33,7 @@ function cwdHash(cwd: string): string {
 }
 
 function getSocketPath(cwd: string): string {
-  return path.join(SOCKETS_DIR, `${cwdHash(cwd)}.sock`);
+  return path.join(SOCKETS_DIR, `${cwdHash(cwd)}-${process.pid}.sock`);
 }
 
 const SOCKETS_DIR = "/tmp/pi-nvim-sockets";
@@ -85,7 +85,7 @@ export default function (pi: ExtensionAPI) {
       try {
         fs.mkdirSync(SOCKETS_DIR, { recursive: true });
         // Write a manifest file alongside the socket for discovery
-        fs.writeFileSync(socketPath + ".info", JSON.stringify({ cwd, pid: process.pid }));
+        fs.writeFileSync(socketPath + ".info", JSON.stringify({ cwd, pid: process.pid, startedAt: new Date().toISOString() }));
       } catch {}
 
       ctx.ui.notify(`pi-nvim listening on ${socketPath}`, "info");
