@@ -2,6 +2,8 @@
 
 Bridge between [pi](https://github.com/badlogic/pi) coding agent and Neovim. Run pi in one terminal pane and Neovim in another — send files, selections, and prompts from Neovim directly into your running pi session.
 
+![demo](./demo/demo.gif)
+
 ## How it works
 
 The repo contains two components:
