@@ -10,6 +10,18 @@ M.config = {
 function M.setup(opts)
   M.config = vim.tbl_deep_extend("force", M.config, opts or {})
 
+  -- Auto-reload buffers when files are changed externally (e.g. by pi agent).
+  -- Only polls when a pi session is reachable. Respects existing autoread setting.
+  if not vim.o.autoread then
+    vim.o.autoread = true
+  end
+  local reload_timer = vim.uv.new_timer()
+  reload_timer:start(0, 1000, vim.schedule_wrap(function()
+    if M.get_socket_path() then
+      pcall(vim.cmd, "silent! checktime")
+    end
+  end))
+
   -- Commands
   vim.api.nvim_create_user_command("PiSend", function()
     M.prompt()
