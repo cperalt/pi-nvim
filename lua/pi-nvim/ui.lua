@@ -53,10 +53,9 @@ function M.open(opts)
   -- Layout
   local width = math.min(72, math.floor(vim.o.columns * 0.5))
   local info_height = 2
-  local input_height = 3
+  local max_input_height = 6
   local gap = 0 -- no gap between bubbles
-  local total_height = info_height + 2 + gap + input_height + 2 -- +2 each for borders
-  local top_row = math.floor((vim.o.lines - total_height) / 2)
+  local top_row = math.floor((vim.o.lines - (info_height + 2 + gap + max_input_height + 2)) / 2)
   local col = math.floor((vim.o.columns - width - 2) / 2)
 
   -- Accent highlights
@@ -103,7 +102,7 @@ function M.open(opts)
   local input_win = vim.api.nvim_open_win(input_buf, true, {
     relative = "editor",
     width = width,
-    height = input_height,
+    height = 1,
     row = input_row,
     col = col,
     style = "minimal",
@@ -114,6 +113,27 @@ function M.open(opts)
     noautocmd = true,
   })
   vim.wo[input_win].winhl = "NormalFloat:Normal,FloatBorder:PiNvimBorder,FloatTitle:PiNvimTitle"
+  vim.wo[input_win].wrap = true
+
+  -- Resize the input window to fit content (1..max_input_height rows)
+  local function resize_input()
+    if not vim.api.nvim_win_is_valid(input_win) then return end
+    local lines = vim.api.nvim_buf_get_lines(input_buf, 0, -1, false)
+    -- Count visual rows (each buffer line may wrap across multiple display rows)
+    local visual_rows = 0
+    for _, line in ipairs(lines) do
+      -- A blank line still takes 1 row
+      visual_rows = visual_rows + math.max(1, math.ceil((#line == 0 and 1 or #line) / width))
+    end
+    local new_height = math.max(1, math.min(max_input_height, visual_rows))
+    vim.api.nvim_win_set_height(input_win, new_height)
+    -- Scroll so the cursor line is always visible (bottom of window)
+    local cursor_line = vim.api.nvim_win_get_cursor(input_win)[1]
+    local top_line = math.max(1, cursor_line - new_height + 1)
+    vim.api.nvim_win_call(input_win, function()
+      vim.fn.winrestview({ topline = top_line })
+    end)
+  end
 
   -- Highlight the visual selection in the source buffer while the dialog is open
   local sel_ns = nil
@@ -153,7 +173,8 @@ function M.open(opts)
   end
 
   local function send()
-    local prompt_text = vim.fn.trim(vim.api.nvim_buf_get_lines(input_buf, 0, 1, false)[1] or "")
+    local lines = vim.api.nvim_buf_get_lines(input_buf, 0, -1, false)
+    local prompt_text = vim.fn.trim(table.concat(lines, "\n"))
     close()
 
     local message
@@ -191,7 +212,6 @@ function M.open(opts)
   local kopts = { buffer = input_buf, noremap = true, silent = true }
 
   vim.keymap.set("i", "<CR>", send, kopts)
-  vim.keymap.set("n", "<CR>", send, kopts)
   vim.keymap.set({ "i", "n" }, "<Esc>", close, kopts)
   vim.keymap.set({ "i", "n" }, "<C-c>", close, kopts)
   vim.keymap.set({ "i", "n" }, "<Tab>", function()
@@ -200,6 +220,12 @@ function M.open(opts)
       update_context()
     end
   end, kopts)
+
+  -- Resize window as text is typed
+  vim.api.nvim_create_autocmd({ "TextChangedI", "TextChanged" }, {
+    buffer = input_buf,
+    callback = resize_input,
+  })
 
   vim.api.nvim_create_autocmd("BufLeave", {
     buffer = input_buf,
