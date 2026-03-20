@@ -39,7 +39,7 @@
     "ci:check": "npm run check"
   },
   "peerDependencies": {
-    "@mariozechner/pi-coding-agent": "*"
+    "@mariozechner/pi-coding-agent": "^0.61.0"
   },
   "peerDependenciesMeta": {
     "@mariozechner/pi-coding-agent": {
@@ -47,7 +47,7 @@
     }
   },
   "devDependencies": {
-    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-coding-agent": "^0.61.0",
     "@types/node": "^24",
     "oxfmt": "^0.33.0",
     "oxlint": "^1.48.0",
