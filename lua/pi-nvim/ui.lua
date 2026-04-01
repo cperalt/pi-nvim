@@ -58,8 +58,9 @@ function M.open(opts)
 
   -- Show queue count if items are pending
   local queue_info = nil
-  if #pi._queue > 0 then
-    queue_info = string.format("Queue: %d item%s pending", #pi._queue, #pi._queue == 1 and "" or "s")
+  local queue = pi._queue or {}
+  if #queue > 0 then
+    queue_info = string.format("Queue: %d item%s pending", #queue, #queue == 1 and "" or "s")
   end
 
   -- Layout
@@ -218,10 +219,10 @@ function M.open(opts)
 
     -- Assemble message: queued items + current context + prompt
     local parts = {}
-    for _, item in ipairs(pi._queue) do
+    for _, item in ipairs(pi._queue or {}) do
       table.insert(parts, item)
     end
-    pi._queue = {}
+    if pi._queue then pi._queue = {} end
 
     if ctx_str then
       table.insert(parts, ctx_str)

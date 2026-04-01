@@ -87,9 +87,13 @@ function M.setup(opts)
     vim.notify("Pi queue cleared", vim.log.levels.INFO)
   end, { desc = "Clear the pi context queue" })
 
-  -- Default keymap: <leader>p in normal and visual mode
-  vim.keymap.set("n", "<leader>p", ":Pi<CR>", { silent = true, desc = "Send to pi" })
-  vim.keymap.set("v", "<leader>p", ":Pi<CR>", { silent = true, desc = "Send selection to pi" })
+  -- Default keymaps: <leader>p prefix
+  vim.keymap.set("n", "<leader>pa", ":Pi<CR>", { silent = true, desc = "Pi: add file context" })
+  vim.keymap.set("v", "<leader>pa", ":Pi<CR>", { silent = true, desc = "Pi: add selection context" })
+  vim.keymap.set("n", "<leader>pf", ":PiFlush<CR>", { silent = true, desc = "Pi: flush queue" })
+  vim.keymap.set("n", "<leader>pc", ":PiClear<CR>", { silent = true, desc = "Pi: clear queue" })
+  vim.keymap.set("n", "<leader>ps", ":PiSend<CR>", { silent = true, desc = "Pi: send prompt" })
+  vim.keymap.set("n", "<leader>pp", ":PiPing<CR>", { silent = true, desc = "Pi: ping session" })
 
   vim.api.nvim_create_user_command("PiPing", function()
     M.ping()
@@ -166,7 +170,31 @@ function M.add_to_queue(selection)
   vim.notify(string.format("Pi: queued %s (%d item%s — :PiFlush to send)", ref, n, n == 1 and "" or "s"), vim.log.levels.INFO)
 end
 
---- Format context and send immediately (no dialog).
+--- Type text into the agent's input without submitting.
+--- Tries Neovim terminal buffer first, falls back to tmux last pane.
+--- @param text string
+function M.type_into_terminal(text)
+  -- Try Neovim terminal buffer first
+  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_is_valid(buf) and vim.bo[buf].buftype == "terminal" then
+      local chan = vim.bo[buf].channel
+      if chan and chan > 0 then
+        vim.api.nvim_chan_send(chan, text)
+        return true
+      end
+    end
+  end
+
+  -- Fall back to tmux: send to last active pane
+  if vim.env.TMUX then
+    vim.fn.system({ "tmux", "send-keys", "-t", "{last}", "-l", text })
+    return true
+  end
+
+  return false
+end
+
+--- Type a context reference into the terminal input without submitting.
 --- Used by :Pi when auto_send = true and show_popup = false.
 --- @param selection table|nil  Visual selection object from ui.capture_selection()
 function M.send_context(selection)
@@ -194,7 +222,12 @@ function M.send_context(selection)
       abs_file = abs_file,
     })
   end
-  M.prompt(ref)
+
+  if M.type_into_terminal(ref .. " ") then
+    vim.notify("Pi: " .. ref, vim.log.levels.INFO)
+  else
+    vim.notify("Pi: no terminal or tmux pane found", vim.log.levels.WARN)
+  end
 end
 
 --- Flush the queue: prompt for text then send all queued context + prompt.
