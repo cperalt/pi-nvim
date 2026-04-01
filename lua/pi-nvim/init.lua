@@ -4,10 +4,12 @@ local M = {}
 --- @field socket_path string|nil  Override socket path (default: auto-discover)
 --- @field context_format "inline"|"reference"  How to attach context: embed contents ("inline", default) or send file references like @file:L1-L10 ("reference")
 --- @field auto_send boolean  If false, :Pi queues context instead of sending immediately; use :PiFlush to send (default: true)
+--- @field show_popup boolean  If false, :Pi sends/queues silently with a notification instead of opening the floating dialog (default: true)
 M.config = {
   socket_path = nil,
   context_format = "inline",
   auto_send = true,
+  show_popup = true,
 }
 
 --- Queue of context strings accumulated in compose mode (auto_send = false).
@@ -56,10 +58,13 @@ function M.setup(opts)
     if not M.config.auto_send then
       -- Compose mode: add to queue, no dialog
       M.add_to_queue(selection)
+    elseif not M.config.show_popup then
+      -- Auto-send without popup: format and send immediately
+      M.send_context(selection)
     else
       ui.open({ selection = selection })
     end
-  end, { range = true, desc = "Open pi send dialog (or queue context in compose mode)" })
+  end, { range = true, desc = "Send context to pi" })
 
   -- Add context to the queue without sending (explicit compose, ignores auto_send)
   vim.api.nvim_create_user_command("PiAdd", function(args)
@@ -159,6 +164,37 @@ function M.add_to_queue(selection)
   table.insert(M._queue, ref)
   local n = #M._queue
   vim.notify(string.format("Pi: queued %s (%d item%s — :PiFlush to send)", ref, n, n == 1 and "" or "s"), vim.log.levels.INFO)
+end
+
+--- Format context and send immediately (no dialog).
+--- Used by :Pi when auto_send = true and show_popup = false.
+--- @param selection table|nil  Visual selection object from ui.capture_selection()
+function M.send_context(selection)
+  local ref
+  if selection then
+    ref = M.format_context({
+      type = "selection",
+      file = selection.file,
+      abs_file = vim.fn.expand("%:p"),
+      start_line = selection.start_line,
+      end_line = selection.end_line,
+      ft = selection.ft,
+      text = selection.text,
+    })
+  else
+    local abs_file = vim.fn.expand("%:p")
+    local rel_file = vim.fn.expand("%:.")
+    if abs_file == "" then
+      vim.notify("No file open", vim.log.levels.WARN)
+      return
+    end
+    ref = M.format_context({
+      type = "file",
+      file = rel_file,
+      abs_file = abs_file,
+    })
+  end
+  M.prompt(ref)
 end
 
 --- Flush the queue: prompt for text then send all queued context + prompt.
