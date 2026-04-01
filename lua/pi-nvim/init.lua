@@ -2,9 +2,17 @@ local M = {}
 
 --- @class pi_nvim.Config
 --- @field socket_path string|nil  Override socket path (default: auto-discover)
+--- @field context_format "inline"|"reference"  How to attach context: embed contents ("inline", default) or send file references like @file:L1-L10 ("reference")
+--- @field auto_send boolean  If false, :Pi queues context instead of sending immediately; use :PiFlush to send (default: true)
 M.config = {
   socket_path = nil,
+  context_format = "inline",
+  auto_send = true,
 }
+
+--- Queue of context strings accumulated in compose mode (auto_send = false).
+--- @type string[]
+M._queue = {}
 
 --- @param opts pi_nvim.Config|nil
 function M.setup(opts)
@@ -45,8 +53,34 @@ function M.setup(opts)
     if args.range == 2 then
       selection = ui.capture_selection()
     end
-    ui.open({ selection = selection })
-  end, { range = true, desc = "Open pi send dialog" })
+    if not M.config.auto_send then
+      -- Compose mode: add to queue, no dialog
+      M.add_to_queue(selection)
+    else
+      ui.open({ selection = selection })
+    end
+  end, { range = true, desc = "Open pi send dialog (or queue context in compose mode)" })
+
+  -- Add context to the queue without sending (explicit compose, ignores auto_send)
+  vim.api.nvim_create_user_command("PiAdd", function(args)
+    local ui = require("pi-nvim.ui")
+    local selection = nil
+    if args.range == 2 then
+      selection = ui.capture_selection()
+    end
+    M.add_to_queue(selection)
+  end, { range = true, desc = "Add current context to pi queue (compose mode)" })
+
+  -- Flush the queue: prompt for text and send everything
+  vim.api.nvim_create_user_command("PiFlush", function()
+    M.flush()
+  end, { desc = "Send queued context with a prompt" })
+
+  -- Clear the queue
+  vim.api.nvim_create_user_command("PiClear", function()
+    M._queue = {}
+    vim.notify("Pi queue cleared", vim.log.levels.INFO)
+  end, { desc = "Clear the pi context queue" })
 
   -- Default keymap: <leader>p in normal and visual mode
   vim.keymap.set("n", "<leader>p", ":Pi<CR>", { silent = true, desc = "Send to pi" })
@@ -59,6 +93,101 @@ function M.setup(opts)
   vim.api.nvim_create_user_command("PiSessions", function()
     M.list_sessions()
   end, { desc = "List running pi sessions" })
+end
+
+--- Format a context item based on config.context_format.
+--- @class pi_nvim.Context
+--- @field type "selection"|"buffer"|"file"
+--- @field file string  Relative path
+--- @field abs_file string  Absolute path
+--- @field start_line integer|nil
+--- @field end_line integer|nil
+--- @field ft string|nil
+--- @field text string|nil  Contents (used by "inline" format)
+---
+--- @param ctx pi_nvim.Context
+--- @return string
+function M.format_context(ctx)
+  if M.config.context_format == "reference" then
+    if ctx.type == "selection" and ctx.start_line then
+      return string.format("@%s:%d-%d", ctx.file, ctx.start_line, ctx.end_line)
+    else
+      local path = ctx.file ~= "" and ctx.file or ctx.abs_file
+      return string.format("@%s", path)
+    end
+  else
+    -- inline (default)
+    if ctx.type == "selection" then
+      local header = string.format("%s lines %d-%d", ctx.file, ctx.start_line, ctx.end_line)
+      return string.format("From %s:\n```%s\n%s\n```", header, ctx.ft or "", ctx.text or "")
+    elseif ctx.type == "buffer" then
+      return string.format("File: %s\n```%s\n%s\n```", ctx.file, ctx.ft or "", ctx.text or "")
+    else
+      return ctx.abs_file
+    end
+  end
+end
+
+--- Queue a context reference without sending.
+--- Used by :PiAdd and by :Pi when auto_send = false.
+--- @param selection table|nil  Visual selection object from ui.capture_selection()
+function M.add_to_queue(selection)
+  local ref
+  if selection then
+    ref = M.format_context({
+      type = "selection",
+      file = selection.file,
+      abs_file = vim.fn.expand("%:p"),
+      start_line = selection.start_line,
+      end_line = selection.end_line,
+      ft = selection.ft,
+      text = selection.text,
+    })
+  else
+    local abs_file = vim.fn.expand("%:p")
+    local rel_file = vim.fn.expand("%:.")
+    if abs_file == "" then
+      vim.notify("No file open", vim.log.levels.WARN)
+      return
+    end
+    ref = M.format_context({
+      type = "file",
+      file = rel_file,
+      abs_file = abs_file,
+    })
+  end
+  table.insert(M._queue, ref)
+  local n = #M._queue
+  vim.notify(string.format("Pi: queued %s (%d item%s — :PiFlush to send)", ref, n, n == 1 and "" or "s"), vim.log.levels.INFO)
+end
+
+--- Flush the queue: prompt for text then send all queued context + prompt.
+function M.flush()
+  if #M._queue == 0 then
+    vim.notify("Pi queue is empty. Use :Pi or :PiAdd to queue context first.", vim.log.levels.WARN)
+    return
+  end
+  local queued = M._queue
+  M._queue = {}
+  vim.ui.input({ prompt = string.format("Pi prompt (%d queued): ", #queued) }, function(input)
+    if input == nil then
+      -- Cancelled: restore queue
+      M._queue = queued
+      return
+    end
+    local parts = {}
+    if input ~= "" then
+      table.insert(parts, input)
+    end
+    for _, item in ipairs(queued) do
+      table.insert(parts, item)
+    end
+    if #parts == 0 then
+      vim.notify("Nothing to send", vim.log.levels.WARN)
+      return
+    end
+    M.prompt(table.concat(parts, "\n\n"))
+  end)
 end
 
 --- Resolve the socket path to use.
@@ -207,20 +336,27 @@ end
 
 --- Send the current file path with optional prompt.
 function M.send_file()
-  local file = vim.fn.expand("%:p")
-  if file == "" then
+  local abs_file = vim.fn.expand("%:p")
+  local rel_file = vim.fn.expand("%:.")
+  if abs_file == "" then
     vim.notify("No file open", vim.log.levels.WARN)
     return
   end
 
-  vim.ui.input({ prompt = "Pi prompt (file: " .. vim.fn.expand("%:.") .. "): " }, function(input)
+  local ctx_str = M.format_context({ type = "file", file = rel_file, abs_file = abs_file })
+
+  vim.ui.input({ prompt = "Pi prompt (file: " .. rel_file .. "): " }, function(input)
     if not input then return end
 
     local message
     if input == "" then
-      message = string.format("Look at this file: %s", file)
+      if M.config.context_format == "reference" then
+        message = ctx_str
+      else
+        message = string.format("Look at this file: %s", abs_file)
+      end
     else
-      message = string.format("File: %s\n\n%s", file, input)
+      message = string.format("%s\n\n%s", input, ctx_str)
     end
     M.prompt(message)
   end)
@@ -232,27 +368,42 @@ function M.send_selection()
   local start_pos = vim.fn.getpos("'<")
   local end_pos = vim.fn.getpos("'>")
   local lines = vim.fn.getregion(start_pos, end_pos, { type = vim.fn.visualmode() })
-  local selection = table.concat(lines, "\n")
+  local selection_text = table.concat(lines, "\n")
 
-  if selection == "" then
+  if selection_text == "" then
     vim.notify("Empty selection", vim.log.levels.WARN)
     return
   end
 
   local file = vim.fn.expand("%:.")
+  local abs_file = vim.fn.expand("%:p")
   local start_line = start_pos[2]
   local end_line = end_pos[2]
   local ft = vim.bo.filetype
 
+  local ctx_str = M.format_context({
+    type = "selection",
+    file = file,
+    abs_file = abs_file,
+    start_line = start_line,
+    end_line = end_line,
+    ft = ft,
+    text = selection_text,
+  })
+
   vim.ui.input({ prompt = "Pi prompt (selection): " }, function(input)
     if not input then return end
 
-    local header = string.format("%s lines %d-%d", file, start_line, end_line)
     local message
     if input == "" then
-      message = string.format("Look at this code from %s:\n\n```%s\n%s\n```", header, ft, selection)
+      if M.config.context_format == "reference" then
+        message = ctx_str
+      else
+        message = string.format("Look at this code from %s lines %d-%d:\n\n```%s\n%s\n```",
+          file, start_line, end_line, ft, selection_text)
+      end
     else
-      message = string.format("%s\n\nFrom %s:\n```%s\n%s\n```", input, header, ft, selection)
+      message = string.format("%s\n\n%s", input, ctx_str)
     end
     M.prompt(message)
   end)
@@ -262,17 +413,30 @@ end
 function M.send_buffer()
   local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
   local content = table.concat(lines, "\n")
-  local file = vim.fn.expand("%:.")
+  local rel_file = vim.fn.expand("%:.")
+  local abs_file = vim.fn.expand("%:p")
   local ft = vim.bo.filetype
+
+  local ctx_str = M.format_context({
+    type = "buffer",
+    file = rel_file,
+    abs_file = abs_file,
+    ft = ft,
+    text = content,
+  })
 
   vim.ui.input({ prompt = "Pi prompt (buffer): " }, function(input)
     if not input then return end
 
     local message
     if input == "" then
-      message = string.format("Look at this file %s:\n\n```%s\n%s\n```", file, ft, content)
+      if M.config.context_format == "reference" then
+        message = ctx_str
+      else
+        message = string.format("Look at this file %s:\n\n```%s\n%s\n```", rel_file, ft, content)
+      end
     else
-      message = string.format("%s\n\nFile: %s\n```%s\n%s\n```", input, file, ft, content)
+      message = string.format("%s\n\n%s", input, ctx_str)
     end
     M.prompt(message)
   end)
