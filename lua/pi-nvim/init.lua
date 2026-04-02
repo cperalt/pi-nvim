@@ -170,9 +170,40 @@ function M.add_to_queue(selection)
   vim.notify(string.format("Pi: queued %s (%d item%s — :PiFlush to send)", ref, n, n == 1 and "" or "s"), vim.log.levels.INFO)
 end
 
+--- Find the best tmux pane to send context to.
+--- Prefers a pane in the current window whose cwd matches Neovim's cwd (worktree-safe).
+--- Falls back to any non-current pane in the current window.
+--- @return string|nil  tmux pane ID (e.g. "%3")
+function M.find_tmux_pane()
+  if not vim.env.TMUX then return nil end
+
+  local current_pane = vim.fn.system("tmux display-message -p '#{pane_id}'"):gsub("%s+", "")
+  local cwd = vim.uv.cwd()
+
+  local output = vim.fn.system("tmux list-panes -F '#{pane_id}\t#{pane_current_path}'")
+
+  local cwd_match = nil
+  local fallback = nil
+  for line in output:gmatch("[^\n]+") do
+    local pane_id, pane_path = line:match("^([^\t]+)\t([^\t]+)$")
+    if pane_id and pane_id ~= current_pane then
+      if pane_path == cwd then
+        cwd_match = pane_id
+        break
+      end
+      if not fallback then
+        fallback = pane_id
+      end
+    end
+  end
+
+  return cwd_match or fallback
+end
+
 --- Type text into the agent's input without submitting.
---- Tries Neovim terminal buffer first, falls back to tmux last pane.
+--- Tries Neovim terminal buffer first, falls back to tmux (cwd-matched pane).
 --- @param text string
+--- @return string|nil  pane ID if sent via tmux, "nvim" if sent to nvim terminal
 function M.type_into_terminal(text)
   -- Try Neovim terminal buffer first
   for _, buf in ipairs(vim.api.nvim_list_bufs()) do
@@ -180,21 +211,23 @@ function M.type_into_terminal(text)
       local chan = vim.bo[buf].channel
       if chan and chan > 0 then
         vim.api.nvim_chan_send(chan, text)
-        return true
+        return "nvim"
       end
     end
   end
 
-  -- Fall back to tmux: send to last active pane
-  if vim.env.TMUX then
-    vim.fn.system({ "tmux", "send-keys", "-t", "{last}", "-l", text })
-    return true
+  -- Fall back to tmux
+  local pane = M.find_tmux_pane()
+  if pane then
+    vim.fn.system({ "tmux", "send-keys", "-t", pane, "-l", text })
+    return pane
   end
 
-  return false
+  return nil
 end
 
---- Type a context reference into the terminal input without submitting.
+--- Type a context reference into the terminal input without submitting,
+--- then focus that pane so the user can type immediately.
 --- Used by :Pi when auto_send = true and show_popup = false.
 --- @param selection table|nil  Visual selection object from ui.capture_selection()
 function M.send_context(selection)
@@ -223,8 +256,12 @@ function M.send_context(selection)
     })
   end
 
-  if M.type_into_terminal(ref .. " ") then
+  local pane = M.type_into_terminal(ref .. " ")
+  if pane then
     vim.notify("Pi: " .. ref, vim.log.levels.INFO)
+    if pane ~= "nvim" and vim.env.TMUX then
+      vim.fn.system({ "tmux", "select-pane", "-t", pane })
+    end
   else
     vim.notify("Pi: no terminal or tmux pane found", vim.log.levels.WARN)
   end
