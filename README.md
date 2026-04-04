@@ -124,6 +124,8 @@ Cursor: L17:C4
 Reference: @nvim/.config/nvim/lua/carlos/plugins/pi-nvim.lua
 ```
 
+This helps the model understand which file is probably relevant. The reference is a lightweight pointer, not an automatic file read: the model still decides whether it needs to inspect the file contents with tools like `read`.
+
 If `live_context.include_buffer_text = true`, the injected context may also include the current in-memory buffer contents for modified or unnamed buffers.
 
 ### Default keybindings
