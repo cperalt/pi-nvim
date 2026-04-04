@@ -5,12 +5,21 @@ local M = {}
 --- @field context_format "inline"|"reference"  How to attach context: embed contents ("inline", default) or send file references like @file:L1-L10 ("reference")
 --- @field auto_send boolean  If false, :Pi queues context instead of sending immediately; use :PiFlush to send (default: true)
 --- @field show_popup boolean  If false, :Pi sends/queues silently with a notification instead of opening the floating dialog (default: true)
+--- @field live_context table  Sync focused buffer/selection to pi in the background
 M.config = {
   socket_path = nil,
   context_format = "inline",
   auto_send = true,
   show_popup = true,
+  live_context = {
+    enabled = true,
+    debounce_ms = 150,
+    max_buffer_bytes = 200000,
+    max_selection_bytes = 50000,
+  },
 }
+
+M._sync_timer = nil
 
 --- Queue of context strings accumulated in compose mode (auto_send = false).
 --- @type string[]
@@ -102,6 +111,137 @@ function M.setup(opts)
   vim.api.nvim_create_user_command("PiSessions", function()
     M.list_sessions()
   end, { desc = "List running pi sessions" })
+
+  if M.config.live_context and M.config.live_context.enabled then
+    M.setup_live_context_sync()
+    vim.schedule(function()
+      M.schedule_editor_state_sync(0)
+    end)
+  end
+end
+
+local function truncate_text(text, max_bytes)
+  if not text or text == "" then return text, false end
+  if not max_bytes or max_bytes <= 0 then return text, false end
+  if #text <= max_bytes then return text, false end
+  return text:sub(1, max_bytes), true
+end
+
+local function get_visual_selection_state(max_bytes)
+  local mode = vim.fn.mode()
+  if not mode:match("^[vV\\22]") then
+    return nil
+  end
+
+  local start_pos = vim.fn.getpos("v")
+  local end_pos = vim.fn.getpos(".")
+  if not start_pos or not end_pos then return nil end
+
+  local start_line, start_col = start_pos[2], start_pos[3]
+  local end_line, end_col = end_pos[2], end_pos[3]
+  if start_line > end_line or (start_line == end_line and start_col > end_col) then
+    start_line, end_line = end_line, start_line
+    start_col, end_col = end_col, start_col
+  end
+
+  local ok, lines = pcall(vim.fn.getregion, start_pos, end_pos, { type = vim.fn.mode() })
+  if not ok or not lines or vim.tbl_isempty(lines) then return nil end
+
+  local text, truncated = truncate_text(table.concat(lines, "\n"), max_bytes)
+  return {
+    startLine = start_line,
+    endLine = end_line,
+    text = text,
+    truncated = truncated,
+  }
+end
+
+function M.get_editor_state()
+  local buf = vim.api.nvim_get_current_buf()
+  if not vim.api.nvim_buf_is_valid(buf) then return nil end
+
+  local cfg = M.config.live_context or {}
+  local abs_file = vim.api.nvim_buf_get_name(buf)
+  local rel_file = abs_file ~= "" and vim.fn.fnamemodify(abs_file, ":.") or ""
+  local cursor = vim.api.nvim_win_get_cursor(0)
+  local buftype = vim.bo[buf].buftype
+  local filetype = vim.bo[buf].filetype
+  local modified = vim.bo[buf].modified
+  local selection = get_visual_selection_state(cfg.max_selection_bytes)
+
+  local state = {
+    cwd = vim.uv.cwd(),
+    file = rel_file,
+    absFile = abs_file,
+    filetype = filetype,
+    modified = modified,
+    buftype = buftype,
+    cursor = { line = cursor[1], col = cursor[2] + 1 },
+    selection = selection,
+  }
+
+  if buftype == "" then
+    local should_include_buffer = modified or abs_file == ""
+    if should_include_buffer then
+      local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+      local text, truncated = truncate_text(table.concat(lines, "\n"), cfg.max_buffer_bytes)
+      state.bufferText = text
+      state.bufferTruncated = truncated
+    end
+  end
+
+  return state
+end
+
+function M.send_editor_state(cb)
+  local state = M.get_editor_state()
+  if not state then
+    if cb then cb("No active buffer") end
+    return
+  end
+
+  M.send_raw({ type = "editor_state", state = state }, cb, { silent = true })
+end
+
+function M.schedule_editor_state_sync(delay_ms)
+  if not (M.config.live_context and M.config.live_context.enabled) then return end
+
+  if M._sync_timer then
+    M._sync_timer:stop()
+    M._sync_timer:close()
+  end
+
+  M._sync_timer = vim.uv.new_timer()
+  if not M._sync_timer then return end
+
+  M._sync_timer:start(delay_ms or (M.config.live_context.debounce_ms or 150), 0, vim.schedule_wrap(function()
+    if M._sync_timer then
+      M._sync_timer:stop()
+      M._sync_timer:close()
+      M._sync_timer = nil
+    end
+    M.send_editor_state()
+  end))
+end
+
+function M.setup_live_context_sync()
+  local group = vim.api.nvim_create_augroup("PiNvimLiveContext", { clear = true })
+  vim.api.nvim_create_autocmd({
+    "VimEnter",
+    "BufEnter",
+    "BufWinEnter",
+    "BufWritePost",
+    "InsertLeave",
+    "TextChanged",
+    "TextChangedI",
+    "ModeChanged",
+    "CursorMoved",
+  }, {
+    group = group,
+    callback = function()
+      M.schedule_editor_state_sync()
+    end,
+  })
 end
 
 --- Format a context item based on config.context_format.
@@ -357,11 +497,15 @@ end
 --- Send a raw JSON message to the pi socket and call cb with the parsed response.
 --- @param msg table
 --- @param cb fun(err: string|nil, response: table|nil)|nil
-function M.send_raw(msg, cb)
+--- @param opts table|nil
+function M.send_raw(msg, cb, opts)
+  opts = opts or {}
   local sock_path = M.get_socket_path()
   if not sock_path then
     local err = "No pi session found. Is pi running with pi-nvim extension?"
-    vim.notify(err, vim.log.levels.ERROR)
+    if not opts.silent then
+      vim.notify(err, vim.log.levels.ERROR)
+    end
     if cb then cb(err, nil) end
     return
   end
@@ -369,7 +513,9 @@ function M.send_raw(msg, cb)
   local client = vim.uv.new_pipe(false)
   if not client then
     local err = "Failed to create pipe"
-    vim.notify(err, vim.log.levels.ERROR)
+    if not opts.silent then
+      vim.notify(err, vim.log.levels.ERROR)
+    end
     if cb then cb(err, nil) end
     return
   end
@@ -377,7 +523,9 @@ function M.send_raw(msg, cb)
   client:connect(sock_path, function(err)
     if err then
       vim.schedule(function()
-        vim.notify("Failed to connect to pi: " .. err, vim.log.levels.ERROR)
+        if not opts.silent then
+          vim.notify("Failed to connect to pi: " .. err, vim.log.levels.ERROR)
+        end
         if cb then cb(err, nil) end
       end)
       return

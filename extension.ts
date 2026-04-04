@@ -41,12 +41,96 @@ function getSocketPath(cwd: string): string {
 const SOCKETS_DIR = "/tmp/pi-nvim-sockets";
 const LATEST_LINK = "/tmp/pi-nvim-latest.sock";
 
+type EditorSelection = {
+  startLine: number;
+  endLine: number;
+  text?: string;
+  truncated?: boolean;
+};
+
+type EditorState = {
+  cwd?: string;
+  file?: string;
+  absFile?: string;
+  filetype?: string;
+  modified?: boolean;
+  buftype?: string;
+  cursor?: { line: number; col: number };
+  selection?: EditorSelection | null;
+  bufferText?: string;
+  bufferTruncated?: boolean;
+  updatedAt?: string;
+};
+
+function getDisplayName(state: EditorState): string {
+  const target = state.file || state.absFile;
+  if (target && target !== "") return path.basename(target);
+  if (state.buftype && state.buftype !== "") return `[${state.buftype}]`;
+  return "[no file]";
+}
+
+function formatEditorState(state: EditorState): string {
+  const lines: string[] = ["[NEOVIM LIVE CONTEXT]"];
+  lines.push(`Focused file: ${getDisplayName(state)}`);
+
+  if (state.filetype) lines.push(`Filetype: ${state.filetype}`);
+  if (state.cursor) lines.push(`Cursor: L${state.cursor.line}:C${state.cursor.col}`);
+
+  if (state.selection) {
+    lines.push(`Selection: lines ${state.selection.startLine}-${state.selection.endLine}`);
+    if (state.selection.text) {
+      lines.push("Selected text:");
+      lines.push("```" + (state.filetype || ""));
+      lines.push(state.selection.text);
+      lines.push("```");
+      if (state.selection.truncated) {
+        lines.push("(selection truncated)");
+      }
+    }
+  }
+
+  if (state.bufferText) {
+    lines.push("Current in-memory buffer contents:");
+    lines.push("```" + (state.filetype || ""));
+    lines.push(state.bufferText);
+    lines.push("```");
+    if (state.bufferTruncated) {
+      lines.push("(buffer snapshot truncated)");
+    }
+  } else if (state.file || state.absFile) {
+    lines.push(`Reference: @${state.file || state.absFile}`);
+  }
+
+  return lines.join("\n");
+}
+
+function formatStatus(state: EditorState | null): string {
+  if (!state) return "nvim: --";
+
+  const parts = [`nvim: ${getDisplayName(state)}`];
+  if (state.selection) parts.push(`sel ${state.selection.startLine}-${state.selection.endLine}`);
+  else if (state.cursor) parts.push(`L${state.cursor.line}`);
+
+  return parts.join(" ");
+}
+
 export default function (pi: ExtensionAPI) {
   let server: net.Server | null = null;
   let socketPath: string | null = null;
+  let latestEditorState: EditorState | null = null;
+  let sessionCtx: any = null;
+
+  function updateStatus() {
+    if (!sessionCtx?.hasUI) return;
+    const theme = sessionCtx.ui.theme;
+    sessionCtx.ui.setStatus("pi-nvim", theme.fg("accent", formatStatus(latestEditorState)));
+  }
 
   pi.on("session_start", async (_event, ctx) => {
     const cwd = ctx.cwd;
+    sessionCtx = ctx;
+    latestEditorState = null;
+    updateStatus();
     // Ensure sockets directory exists
     try {
       fs.mkdirSync(SOCKETS_DIR, { recursive: true });
@@ -112,6 +196,16 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
+      if (msg.type === "editor_state" && msg.state && typeof msg.state === "object") {
+        latestEditorState = {
+          ...msg.state,
+          updatedAt: new Date().toISOString(),
+        };
+        updateStatus();
+        respond(conn, { ok: true });
+        return;
+      }
+
       if (msg.type === "prompt" && typeof msg.message === "string") {
         // Exit kitty's scrollback viewer by switching to private screen mode
         // and back. This snaps to the bottom without clearing scrollback history.
@@ -151,7 +245,24 @@ export default function (pi: ExtensionAPI) {
     } catch {}
   }
 
+  pi.on("before_agent_start", async () => {
+    if (!latestEditorState) return;
+
+    return {
+      message: {
+        customType: "pi-nvim-live-context",
+        content: formatEditorState(latestEditorState),
+        display: false,
+        details: latestEditorState,
+      },
+    };
+  });
+
   pi.on("session_shutdown", async () => {
+    if (sessionCtx?.hasUI) {
+      sessionCtx.ui.setStatus("pi-nvim", undefined);
+    }
+    sessionCtx = null;
     cleanup();
   });
 
@@ -162,7 +273,8 @@ export default function (pi: ExtensionAPI) {
     description: "Show pi-nvim socket path",
     handler: async (_args, ctx) => {
       if (socketPath) {
-        ctx.ui.notify(`Socket: ${socketPath}`, "info");
+        const file = latestEditorState ? getDisplayName(latestEditorState) : "--";
+        ctx.ui.notify(`Socket: ${socketPath}\nFocused nvim target: ${file}`, "info");
       } else {
         ctx.ui.notify("pi-nvim not active", "warning");
       }
