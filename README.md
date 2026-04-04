@@ -112,6 +112,20 @@ This is configurable:
 
 By default, automatic live context stays lightweight and uses path/reference-based context instead of embedding whole buffers.
 
+### Example injected context
+
+With the default lightweight setup, pi receives a hidden message like this before your prompt:
+
+```text
+[NEOVIM LIVE CONTEXT]
+Focused file: pi-nvim.lua
+Filetype: lua
+Cursor: L17:C4
+Reference: @nvim/.config/nvim/lua/carlos/plugins/pi-nvim.lua
+```
+
+If `live_context.include_buffer_text = true`, the injected context may also include the current in-memory buffer contents for modified or unnamed buffers.
+
 ### Default keybindings
 
 `<leader>p` is mapped to `:Pi` in both normal and visual mode by default.
