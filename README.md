@@ -2,7 +2,7 @@
 
 Bridge between [pi](https://github.com/badlogic/pi) coding agent and Neovim. Run pi in one terminal pane and Neovim in another — send files, selections, and prompts from Neovim directly into your running pi session.
 
-It also supports **live editor awareness**: the focused Neovim buffer, cursor position, active visual selection, and unsaved in-memory text are synced to pi automatically.
+It also supports **live editor awareness**: the focused Neovim buffer, cursor position, and active visual selection can be synced to pi automatically.
 
 ![demo](./demo/demo.gif)
 
@@ -49,8 +49,35 @@ require("pi-nvim").setup({
   live_context = {
     enabled = true,
     debounce_ms = 150,
+    include_buffer_text = false,
     max_buffer_bytes = 200000,
     max_selection_bytes = 50000,
+  },
+})
+```
+
+### Example configs
+
+**Recommended lightweight live awareness**
+
+```lua
+require("pi-nvim").setup({
+  context_format = "reference",
+  show_popup = false,
+  live_context = {
+    enabled = true,
+    include_buffer_text = false,
+  },
+})
+```
+
+**Manual-only mode**
+
+```lua
+require("pi-nvim").setup({
+  context_format = "reference",
+  live_context = {
+    enabled = false,
   },
 })
 ```
@@ -73,11 +100,17 @@ Start pi in one terminal. Start Neovim in another. The pi extension automaticall
 
 ### Live editor awareness
 
-When `require("pi-nvim").setup()` runs, the plugin automatically syncs your focused buffer state to pi in the background.
+When `require("pi-nvim").setup()` runs, the plugin can automatically sync your focused buffer state to pi in the background.
 
-Pi uses the current editor state through **automatic context injection**: before each user prompt, pi receives a hidden message describing the latest focused file, cursor, selection, and in-memory buffer snapshot when needed.
+Pi uses the current editor state through **automatic context injection**: before each user prompt, pi receives a hidden message describing the latest focused file, cursor, selection, and file reference.
 
-Saved/unmodified buffers are usually sent by path/reference instead of embedding the whole file. In-memory buffer text is only sent when needed, such as for unsaved changes or unnamed buffers.
+This is configurable:
+
+- `live_context.enabled = true` enables automatic editor awareness
+- `live_context.enabled = false` disables it entirely, so you only send context manually with `:Pi`, `:PiSendFile`, etc.
+- `live_context.include_buffer_text = true` optionally includes in-memory buffer contents for modified or unnamed buffers
+
+By default, automatic live context stays lightweight and uses path/reference-based context instead of embedding whole buffers.
 
 ### Default keybindings
 

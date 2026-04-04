@@ -5,7 +5,7 @@ local M = {}
 --- @field context_format "inline"|"reference"  How to attach context: embed contents ("inline", default) or send file references like @file:L1-L10 ("reference")
 --- @field auto_send boolean  If false, :Pi queues context instead of sending immediately; use :PiFlush to send (default: true)
 --- @field show_popup boolean  If false, :Pi sends/queues silently with a notification instead of opening the floating dialog (default: true)
---- @field live_context table  Sync focused buffer/selection to pi in the background
+--- @field live_context table  Live Neovim awareness settings
 M.config = {
   socket_path = nil,
   context_format = "inline",
@@ -14,6 +14,7 @@ M.config = {
   live_context = {
     enabled = true,
     debounce_ms = 150,
+    include_buffer_text = false,
     max_buffer_bytes = 200000,
     max_selection_bytes = 50000,
   },
@@ -180,7 +181,7 @@ function M.get_editor_state()
     selection = selection,
   }
 
-  if buftype == "" then
+  if buftype == "" and cfg.include_buffer_text then
     local should_include_buffer = modified or abs_file == ""
     if should_include_buffer then
       local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
