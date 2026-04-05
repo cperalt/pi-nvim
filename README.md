@@ -4,7 +4,7 @@ Bridge between [pi](https://github.com/badlogic/pi) coding agent and Neovim. Run
 
 It also supports **live editor awareness**: the focused Neovim buffer, cursor position, and active visual selection can be synced to pi automatically.
 
-![demo](./demo/demo.gif)
+![demo](./demo/demo-2026-04-04.gif)
 
 ## How it works
 
