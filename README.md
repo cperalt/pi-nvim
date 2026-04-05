@@ -2,6 +2,8 @@
 
 Bridge between [pi](https://github.com/badlogic/pi) coding agent and Neovim. Run pi in one terminal pane and Neovim in another — send files, selections, and prompts from Neovim directly into your running pi session.
 
+It also supports **live editor awareness**: the focused Neovim buffer, cursor position, and active visual selection can be synced to pi automatically.
+
 ![demo](./demo/demo.gif)
 
 ## How it works
@@ -42,7 +44,42 @@ With [lazy.nvim](https://github.com/folke/lazy.nvim):
 Then in your config:
 
 ```lua
-require("pi-nvim").setup()
+require("pi-nvim").setup({
+  context_format = "reference",
+  live_context = {
+    enabled = true,
+    debounce_ms = 150,
+    include_buffer_text = false,
+    max_buffer_bytes = 200000,
+    max_selection_bytes = 50000,
+  },
+})
+```
+
+### Example configs
+
+**Recommended lightweight live awareness**
+
+```lua
+require("pi-nvim").setup({
+  context_format = "reference",
+  show_popup = false,
+  live_context = {
+    enabled = true,
+    include_buffer_text = false,
+  },
+})
+```
+
+**Manual-only mode**
+
+```lua
+require("pi-nvim").setup({
+  context_format = "reference",
+  live_context = {
+    enabled = false,
+  },
+})
 ```
 
 ## Usage
@@ -60,6 +97,36 @@ Start pi in one terminal. Start Neovim in another. The pi extension automaticall
 | `:PiSendBuffer` | Send entire buffer + prompt |
 | `:PiPing` | Check if pi is reachable |
 | `:PiSessions` | List/switch between running pi sessions |
+
+### Live editor awareness
+
+When `require("pi-nvim").setup()` runs, the plugin can automatically sync your focused buffer state to pi in the background.
+
+Pi uses the current editor state through **automatic context injection**: before each user prompt, pi receives a hidden message describing the latest focused file, cursor, selection, and file reference.
+
+This is configurable:
+
+- `live_context.enabled = true` enables automatic editor awareness
+- `live_context.enabled = false` disables it entirely, so you only send context manually with `:Pi`, `:PiSendFile`, etc.
+- `live_context.include_buffer_text = true` optionally includes in-memory buffer contents for modified or unnamed buffers
+
+By default, automatic live context stays lightweight and uses path/reference-based context instead of embedding whole buffers.
+
+### Example injected context
+
+With the default lightweight setup, pi receives a hidden message like this before your prompt:
+
+```text
+[NEOVIM LIVE CONTEXT]
+Focused file: pi-nvim.lua
+Filetype: lua
+Cursor: L17:C4
+Reference: @nvim/.config/nvim/lua/carlos/plugins/pi-nvim.lua
+```
+
+This helps the model understand which file is probably relevant. The reference is a lightweight pointer, not an automatic file read: the model still decides whether it needs to inspect the file contents with tools like `read`.
+
+If `live_context.include_buffer_text = true`, the injected context may also include the current in-memory buffer contents for modified or unnamed buffers.
 
 ### Default keybindings
 

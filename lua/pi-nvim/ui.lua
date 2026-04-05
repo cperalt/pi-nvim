@@ -45,14 +45,27 @@ function M.open(opts)
   local context_info
   if selection then
     local n = select(2, selection.text:gsub("\n", "")) + 1
-    context_info = string.format("Selection: %d lines (%d-%d)", n, selection.start_line, selection.end_line)
+    if pi.config.context_format == "reference" then
+      context_info = string.format("Selection: %d lines (%d-%d) → @%s:%d-%d",
+        n, selection.start_line, selection.end_line,
+        selection.file, selection.start_line, selection.end_line)
+    else
+      context_info = string.format("Selection: %d lines (%d-%d)", n, selection.start_line, selection.end_line)
+    end
   else
     context_info = "Send buffer: [ ] (Tab to toggle)"
   end
 
+  -- Show queue count if items are pending
+  local queue_info = nil
+  local queue = pi._queue or {}
+  if #queue > 0 then
+    queue_info = string.format("Queue: %d item%s pending", #queue, #queue == 1 and "" or "s")
+  end
+
   -- Layout
   local width = math.min(72, math.floor(vim.o.columns * 0.5))
-  local info_height = 2
+  local info_height = queue_info and 3 or 2
   local max_input_height = 6
   local gap = 0 -- no gap between bubbles
   local top_row = math.floor((vim.o.lines - (info_height + 2 + gap + max_input_height + 2)) / 2)
@@ -69,10 +82,11 @@ function M.open(opts)
   -- Top bubble: info
   local info_buf = vim.api.nvim_create_buf(false, true)
   vim.bo[info_buf].buftype = "nofile"
-  vim.api.nvim_buf_set_lines(info_buf, 0, -1, false, {
-    " " .. file_info,
-    " " .. context_info,
-  })
+  local info_lines = { " " .. file_info, " " .. context_info }
+  if queue_info then
+    table.insert(info_lines, " " .. queue_info)
+  end
+  vim.api.nvim_buf_set_lines(info_buf, 0, -1, false, info_lines)
   vim.bo[info_buf].modifiable = false
 
   local info_win = vim.api.nvim_open_win(info_buf, false, {
@@ -177,33 +191,71 @@ function M.open(opts)
     local prompt_text = vim.fn.trim(table.concat(lines, "\n"))
     close()
 
-    local message
+    -- Build context string using configured format
+    local ctx_str = nil
+    local is_reference = pi.config.context_format == "reference"
+
     if selection then
-      local header = string.format("%s lines %d-%d", selection.file, selection.start_line, selection.end_line)
-      if prompt_text == "" then
-        message = string.format("Look at this code from %s:\n\n```%s\n%s\n```", header, selection.ft, selection.text)
-      else
-        message = string.format("%s\n\nFrom %s:\n```%s\n%s\n```", prompt_text, header, selection.ft, selection.text)
-      end
+      ctx_str = pi.format_context({
+        type = "selection",
+        file = selection.file,
+        abs_file = vim.fn.expand("%:p"),
+        start_line = selection.start_line,
+        end_line = selection.end_line,
+        ft = selection.ft,
+        text = selection.text,
+      })
     elseif send_buffer and rel_file ~= "" then
-      local content = table.concat(buf_lines, "\n")
-      if prompt_text == "" then
-        message = string.format("Look at this file %s:\n\n```%s\n%s\n```", rel_file, ft, content)
-      else
-        message = string.format("%s\n\nFile: %s\n```%s\n%s\n```", prompt_text, rel_file, ft, content)
-      end
+      ctx_str = pi.format_context({
+        type = "buffer",
+        file = rel_file,
+        abs_file = file,
+        ft = ft,
+        text = table.concat(buf_lines, "\n"),
+      })
     elseif file ~= "" then
-      if prompt_text == "" then
-        message = string.format("Look at this file: %s", file)
-      else
-        message = string.format("File: %s\n\n%s", file, prompt_text)
-      end
-    else
+      ctx_str = pi.format_context({ type = "file", file = rel_file, abs_file = file })
+    end
+
+    -- Assemble message: queued items + current context + prompt
+    local parts = {}
+    for _, item in ipairs(pi._queue or {}) do
+      table.insert(parts, item)
+    end
+    if pi._queue then pi._queue = {} end
+
+    if ctx_str then
+      table.insert(parts, ctx_str)
+    end
+
+    local message
+    if #parts == 0 then
       if prompt_text == "" then
         vim.notify("Nothing to send", vim.log.levels.WARN)
         return
       end
       message = prompt_text
+    elseif prompt_text == "" then
+      -- No user prompt: use a default preamble only for inline format
+      if is_reference then
+        message = table.concat(parts, "\n")
+      else
+        -- Inline: keep the old default "Look at this..." preamble for single items
+        if #parts == 1 and not selection and not send_buffer then
+          message = string.format("Look at this file: %s", file)
+        elseif #parts == 1 and selection then
+          message = string.format("Look at this code from %s lines %d-%d:\n\n```%s\n%s\n```",
+            selection.file, selection.start_line, selection.end_line, selection.ft, selection.text)
+        elseif #parts == 1 and send_buffer then
+          message = string.format("Look at this file %s:\n\n```%s\n%s\n```",
+            rel_file, ft, table.concat(buf_lines, "\n"))
+        else
+          message = table.concat(parts, "\n\n")
+        end
+      end
+    else
+      -- User typed a prompt: prepend it
+      message = prompt_text .. "\n\n" .. table.concat(parts, "\n\n")
     end
 
     pi.prompt(message)
